@@ -1,0 +1,94 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Backend stack for unit01-capstone: single EC2 instance running the
+  Express API + MongoDB containers via docker-compose.dev.yml.
+
+Parameters:
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair to enable SSH access.
+
+Mappings:
+  Net:
+    IDs:
+      VpcId: vpc-0164020aa1fc89490
+      SubnetId: subnet-00b5865f6f13b3413
+
+Resources:
+
+  BackendSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH and API access
+      VpcId: !FindInMap [Net, IDs, VpcId]
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH access
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: 0.0.0.0/0
+          Description: Express API access
+      Tags:
+        - Key: Name
+          Value: backend-sg
+
+  BackendInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.medium
+      KeyName: !Ref KeyName
+      SubnetId: !FindInMap [Net, IDs, SubnetId]
+      SecurityGroupIds:
+        - !Ref BackendSecurityGroup
+      # Ubuntu 22.04 LTS (us-east-1). If you deploy in a different region,
+      # look up the matching AMI at https://cloud-images.ubuntu.com/locator/ec2/
+      ImageId: ami-0e001c9271cf7f3b9
+      Tags:
+        - Key: Name
+          Value: backend-instance
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -e
+
+          # --- Install Docker + Docker Compose plugin ---
+          apt-get update -y
+          apt-get install -y ca-certificates curl gnupg git
+          install -m 0755 -d /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+          chmod a+r /etc/apt/keyrings/docker.asc
+          echo \
+            "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+            $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
+            | tee /etc/apt/sources.list.d/docker.list > /dev/null
+          apt-get update -y
+          apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+          systemctl enable docker
+          systemctl start docker
+
+          # --- Clone repo and start the backend containers ---
+          cd /home/ubuntu
+          git clone https://github.com/AmaaniJetley/unit01-capstone.git app
+          cd app/backend
+
+          # NOTE: docker-compose.dev.yml hardcodes JWT_SECRET and MONGO_URL.
+          # Fine for a capstone demo, but do not use as-is in production.
+          docker compose -f docker-compose.dev.yml up -d --build
+
+Outputs:
+  InstancePublicIp:
+    Description: Public IP of the backend EC2 instance
+    Value: !GetAtt BackendInstance.PublicIp
+
+  ApiURL:
+    Description: URL of the Express API
+    Value: !Sub "http://${BackendInstance.PublicDnsName}:3000"
+
+  SSHCommand:
+    Description: Command to SSH into the instance
+    Value: !Sub "ssh -i james.pem ubuntu@${BackendInstance.PublicDnsName}"
